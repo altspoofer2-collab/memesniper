@@ -53,6 +53,29 @@ external callouts 20. The bot buys when the score is at least `MIN_SCORE`.
 a hard stop at −`STOP_LOSS_PCT`, a time stop at `MAX_HOLD_MINUTES`, a daily loss
 limit and a cap on open positions.
 
+## Telegram control
+
+Set `TELEGRAM_BOT_TOKEN` (from @BotFather) and `TELEGRAM_CHAT_ID` (your id from
+@userinfobot; message your bot once first). Every buy alert comes with
+**Sell 25% / 50% / all** buttons.
+
+| Command | What it does |
+|---|---|
+| `/status` | balance, today's P&L, open positions, hot narratives |
+| `/positions` | each open position with P&L and sell buttons |
+| `/buy <mint> [sol]` | manual buy: shows safety check and liquidity, then asks you to confirm |
+| *(paste a contract address)* | same as `/buy` |
+| `/sell <mint or symbol> [pct]` | sell all, or a percentage |
+| `/sellall` | close everything |
+| `/pause`, `/resume` | stop or start auto-buys; exits keep running |
+| `/narratives` | heat bars for the current hot themes |
+| `/config`, `/set <key> <value>` | view or change min_score, buy_sol, tp, tp_sell, sl, trail, max_hold, max_positions, daily_loss |
+
+Safety: the bot only obeys `TELEGRAM_CHAT_ID`. In a group chat it also needs the
+sender in `TELEGRAM_ALLOWED_USER_IDS`. Commands sent while the bot was offline
+are ignored, and buy confirmations expire after 60 seconds. `/set` changes only
+last until restart, so put values you want to keep in `.env`.
+
 ## Going live
 
 Only do this after days of paper trading with a positive `npm run report`. Paper

@@ -10,7 +10,8 @@ import { log, record } from "../log.js";
 import type { Position } from "../types.js";
 import type { Executor } from "./executor.js";
 
-export type Notify = (msg: string) => void;
+/** mint is set on buy alerts so Telegram can attach sell buttons */
+export type Notify = (msg: string, mint?: string) => void;
 
 export class PositionManager {
   readonly open = new Map<string, Position>(); // by mint
@@ -18,8 +19,10 @@ export class PositionManager {
   private dayKey = "";
   private dayPnl = 0;
   private timer?: NodeJS.Timeout;
+  /** when true, auto-buys are skipped (manual buys still work) */
+  paused = false;
 
-  constructor(private exec: Executor, private notify: Notify = () => {}) {}
+  constructor(private exec: Executor, public notify: Notify = () => {}) {}
 
   start() {
     this.timer = setInterval(() => {
@@ -39,23 +42,35 @@ export class PositionManager {
     return this;
   }
 
-  canOpen(mint: string): string | null {
+  get dayPnlSol() {
+    return this.today().dayPnl;
+  }
+
+  canOpen(mint: string, manual = false): string | null {
     this.today();
     if (this.open.has(mint) || this.busy.has(mint)) return "already in position";
-    if (this.open.size + this.busy.size >= config.maxOpenPositions) return "max open positions";
+    if (!manual && this.paused) return "auto-buy paused";
+    if (!manual && this.open.size + this.busy.size >= config.maxOpenPositions) return "max open positions";
     if (-this.dayPnl >= config.dailyLossLimitSol) return "daily loss limit hit";
     return null;
   }
 
-  async buy(mint: string, symbol: string, priceSol: number, score: number) {
-    const why = this.canOpen(mint);
+  /** Returns null on success, or the reason the buy didn't happen. */
+  async buy(
+    mint: string,
+    symbol: string,
+    priceSol: number,
+    score: number,
+    opts: { manual?: boolean; sol?: number } = {},
+  ): Promise<string | null> {
+    const why = this.canOpen(mint, opts.manual);
     if (why) {
       log.info(`skip buy ${symbol}: ${why}`);
-      return;
+      return why;
     }
     this.busy.add(mint);
     try {
-      const fill = await this.exec.buy(mint, config.buyAmountSol, priceSol);
+      const fill = await this.exec.buy(mint, opts.sol ?? config.buyAmountSol, priceSol);
       if (fill.tokens <= 0) throw new Error("bought 0 tokens");
       const p: Position = {
         id: `${mint.slice(0, 6)}-${Date.now()}`,
@@ -73,11 +88,13 @@ export class PositionManager {
       };
       this.open.set(mint, p);
       record("trades", { kind: "buy", mode: this.exec.kind, mint, symbol, sol: fill.sol, tokens: fill.tokens, price: priceSol, score, sig: fill.sig });
-      const msg = `🟢 [${this.exec.kind}] BUY ${symbol} ${fill.sol.toFixed(4)} SOL @ ${priceSol.toExponential(3)} (score ${score})\nhttps://dexscreener.com/solana/${mint}`;
+      const msg = `🟢 [${this.exec.kind}]${opts.manual ? " MANUAL" : ""} BUY ${symbol} ${fill.sol.toFixed(4)} SOL @ ${priceSol.toExponential(3)} (score ${score})\nhttps://dexscreener.com/solana/${mint}`;
       log.info(msg);
-      this.notify(msg);
+      this.notify(msg, mint);
+      return null;
     } catch (e: any) {
       log.error(`buy ${symbol} failed: ${e.message}`);
+      return e.message;
     } finally {
       this.busy.delete(mint);
     }
@@ -144,6 +161,20 @@ export class PositionManager {
     } finally {
       this.busy.delete(p.mint);
     }
+  }
+
+  /** Manual sell from Telegram. fraction 0..1. Returns null on success or an error. */
+  async sellManual(mint: string, fraction: number): Promise<string | null> {
+    const p = this.open.get(mint);
+    if (!p) return "no open position";
+    if (this.busy.has(mint)) return "a trade on this token is already in progress";
+    await this.sell(p, Math.min(1, Math.max(0.01, fraction)), `manual ${Math.round(fraction * 100)}%`);
+    return null;
+  }
+
+  /** Find an open position by mint or (case-insensitive) symbol. */
+  find(q: string): Position | undefined {
+    return this.open.get(q) ?? [...this.open.values()].find((p) => p.symbol.toLowerCase() === q.toLowerCase());
   }
 
   async closeAll(reason = "shutdown") {

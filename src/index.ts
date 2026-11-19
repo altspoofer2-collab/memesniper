@@ -9,9 +9,9 @@
 import { config } from "./config.js";
 import { log, record } from "./log.js";
 import { NarrativeTracker } from "./narrative.js";
-import { notify } from "./notify.js";
 import { MockSafetyChecker, SafetyChecker } from "./safety.js";
 import { scoreCandidate } from "./scorer.js";
+import { TelegramControl } from "./telegram.js";
 import { DexScreenerSource, fetchPairs } from "./sources/dexscreener.js";
 import { GmgnSource } from "./sources/gmgn.js";
 import { MockPumpSource } from "./sources/mock.js";
@@ -39,7 +39,7 @@ if (config.mode === "live" && config.liveConfirm !== "yes-i-understand") {
   process.exit(1);
 }
 const exec: Executor = config.mode === "live" ? new LiveExecutor() : new PaperExecutor();
-const positions = new PositionManager(exec, notify);
+const positions = new PositionManager(exec);
 const narratives = new NarrativeTracker({
   seeds: config.seedNarratives,
   ...(simulate ? { shortWindowMs: 60_000, longWindowMs: 10 * 60_000, minShortWeight: 3 } : {}),
@@ -208,6 +208,15 @@ async function status() {
 // ---------- start ----------
 log.info(`memesniper starting — mode=${config.mode}${simulate ? " (SIMULATION)" : ""} buy=${config.buyAmountSol} SOL minScore=${config.minScore}`);
 positions.start();
+let telegram: TelegramControl | undefined;
+if (config.telegramBotToken && config.telegramChatId) {
+  telegram = new TelegramControl({ positions, exec, narratives, safety, getCandidate: (m) => candidates.get(m) });
+  positions.notify = telegram.alert;
+  telegram.start().catch((e) => log.warn("telegram start:", e.message));
+  log.info("telegram: alerts + remote control enabled");
+} else {
+  log.info("telegram: off (set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to enable)");
+}
 if (simulate || config.enablePumpPortal) pump.start();
 const timers: NodeJS.Timeout[] = [];
 if (config.enableDexScreener) {
